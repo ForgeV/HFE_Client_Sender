@@ -1,3 +1,4 @@
+import json
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
 import socket
@@ -8,10 +9,10 @@ import secrets
 from HFE import hfe
 
 
+
+
+
 class HFE:
-
-
-    class HFE:
 
 
         def __init__(self, n=128, mod_poly=None):
@@ -227,12 +228,74 @@ class HFE:
                         return False
             return True
 
+        def get_public_key(self) -> dict:
+            """Возвращает публичные параметры, необходимые для шифрования."""
+            return {
+                "n": self.n,
+                "mod_poly": self.mod_poly,
+                "T_matrix": self.T_matrix,
+                "T_vector": self.T_vector,
+                "e": self.e,
+                "c": self.c,
+            }
+
+        @classmethod
+        def from_public_key(cls, public_key: dict):
+            """Создает объект HFE только с публичным ключом (для шифрования)."""
+            hfe = cls(n=public_key["n"], mod_poly=public_key["mod_poly"])
+            hfe.T_matrix = public_key["T_matrix"]
+            hfe.T_vector = public_key["T_vector"]
+            hfe.e = public_key["e"]
+            hfe.c = public_key["c"]
+            return hfe
+
+        def get_private_key(self) -> dict:
+            """Возвращает все секретные параметры для расшифрования."""
+            return {
+                "n": self.n,
+                "mod_poly": self.mod_poly,
+                "S_matrix": self.S_matrix,
+                "S_vector": self.S_vector,
+                "S_inv_matrix": self.S_inv_matrix,
+                "S_inv_vector": self.S_inv_vector,
+                "T_inv_matrix": self.T_inv_matrix,
+                "T_inv_vector": self.T_inv_vector,
+                "e": self.e,
+                "e_inv": self.e_inv,
+                "c": self.c,
+            }
+
+        @classmethod
+        def from_private_key(cls, private_key: dict):
+            """Восстанавливает полный объект HFE из приватного ключа."""
+            hfe = cls(n=private_key["n"], mod_poly=private_key["mod_poly"])
+            hfe.S_matrix = private_key["S_matrix"]
+            hfe.S_vector = private_key["S_vector"]
+            hfe.S_inv_matrix = private_key["S_inv_matrix"]
+            hfe.S_inv_vector = private_key["S_inv_vector"]
+            hfe.T_inv_matrix = private_key["T_inv_matrix"]
+            hfe.T_inv_vector = private_key["T_inv_vector"]
+            hfe.e = private_key["e"]
+            hfe.e_inv = private_key["e_inv"]
+            hfe.c = private_key["c"]
+            return hfe
+
+
+
+
+
+
+
+
+
+
 
 class SecureChatClient:
     def __init__(self, host, port):
         self.host = host
         self.port = port
-        self.hfe = HFE()
+        self.hfe = HFE()  # Локальный ключевой пар
+        self.public_keys = {}  # Хранилище чужих публичных ключей
         self.setup_gui()
         self.setup_network()
         self.start_listening()
@@ -240,6 +303,9 @@ class SecureChatClient:
     def setup_gui(self):
         self.root = tk.Tk()
         self.root.title(f"Защищенный HFE чат - {self.host}:{self.port}")
+
+        # Кнопка для обмена ключами
+        tk.Button(self.root, text="Обмен ключами", command=self.init_key_exchange).pack(pady=2)
 
         self.message_entry = tk.Entry(self.root, width=50)
         self.message_entry.pack(pady=5)
@@ -268,20 +334,68 @@ class SecureChatClient:
         self.listener = threading.Thread(target=self.receive_messages, daemon=True)
         self.listener.start()
 
+    def init_key_exchange(self):
+        """Инициировать обмен ключами с указанным получателем"""
+        recipient = self.get_recipient_addr()
+        self.request_public_key(recipient)
+
+    def request_public_key(self, recipient):
+        """Отправить запрос на получение публичного ключа"""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect(recipient)
+                s.sendall(b'KEY_REQUEST:' + json.dumps({
+                    'sender_ip': self.host,
+                    'sender_port': self.port
+                }).encode())
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось запросить ключ: {str(e)}")
+
+    def handle_key_exchange(self, data, addr):
+        """Обработка операций, связанных с обменом ключами"""
+        if data.startswith(b'KEY_REQUEST:'):
+            # Отправить наш публичный ключ запросившей стороне
+            key_data = json.dumps(self.hfe.get_public_key()).encode()
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((addr[0], int(json.loads(data[12:])['sender_port'])))
+                    s.sendall(b'KEY_RESPONSE:' + key_data)
+            except Exception as e:
+                self.display_message(f"[Ошибка] Не удалось отправить ключ: {str(e)}")
+
+        elif data.startswith(b'KEY_RESPONSE:'):
+            # Получить и сохранить публичный ключ
+            try:
+                key_data = json.loads(data[13:])
+                recipient_addr = (key_data.get('sender_ip', addr[0]), key_data.get('sender_port', addr[1]))
+                self.public_keys[recipient_addr] = hfe.from_public_key(key_data)
+                self.display_message(f"[Система] Получен публичный ключ от {recipient_addr}")
+            except Exception as e:
+                self.display_message(f"[Ошибка] Некорректный ключ: {str(e)}")
+
+    def get_recipient_addr(self):
+        return (
+            self.ip_entry.get(),
+            int(self.port_entry.get())
+        )
+
     def receive_messages(self):
         while True:
             try:
                 client, addr = self.sock.accept()
                 data = client.recv(4096)
                 if data:
-                    try:
-                        decrypted = hfe.decrypt(data)
-                        self.display_message(f"[{addr[0]}:{addr[1]}] {decrypted.decode('utf-8')}")
-                    except Exception as e:
-                        self.display_message(f"[Error] Ошибка дешифровки: {str(e)}")
+                    if data.startswith(b'KEY_'):
+                        self.handle_key_exchange(data, addr)
+                    else:
+                        try:
+                            decrypted = hfe.decrypt(data)
+                            self.display_message(f"[{addr[0]}:{addr[1]}] {decrypted.decode('utf-8')}")
+                        except Exception as e:
+                            self.display_message(f"[Ошибка] Дешифровка: {str(e)}")
                 client.close()
             except Exception as e:
-                print(f"Получена ошибка: {e}")
+                print(f"Ошибка приема: {e}")
 
     def send_message(self):
         message = self.message_entry.get()
@@ -289,20 +403,25 @@ class SecureChatClient:
             return
 
         try:
-            recipient_ip = self.ip_entry.get()
-            recipient_port = int(self.port_entry.get())
+            recipient = self.get_recipient_addr()
 
-            encrypted = hfe.encrypt(message)
+            # Проверяем наличие публичного ключа получателя
+            if recipient not in self.public_keys:
+                self.request_public_key(recipient)
+                raise ValueError("Публичный ключ получателя не найден. Запрошен...")
+
+            # Шифруем сообщение публичным ключом получателя
+            recipient_hfe = self.public_keys[recipient]
+            encrypted = recipient_hfe.encrypt(message)
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((recipient_ip, recipient_port))
+                s.connect(recipient)
                 s.sendall(encrypted)
 
-            self.display_message(f"{port}: {message}")
+            self.display_message(f"[Я]: {message}")
             self.message_entry.delete(0, tk.END)
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
-
     def display_message(self, text):
         self.message_area.insert(tk.END, text + "\n")
         self.message_area.see(tk.END)
@@ -316,7 +435,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("python secure_chat.py [PORT]")
+        print("Usage: python secure_chat.py [PORT]")
         sys.exit(1)
 
     try:
@@ -324,5 +443,5 @@ if __name__ == "__main__":
         app = SecureChatClient('localhost', port)
         app.run()
     except ValueError:
-        print("Неверный порт")
+        print("Invalid port number")
         sys.exit(1)
