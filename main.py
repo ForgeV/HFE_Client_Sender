@@ -71,7 +71,7 @@ class HFE:
             n=params['n'],
             mod_poly=params['mod_poly'],
             generate_keys=False)
-        # Устанавливаем публичные параметры
+
         hfe.S_matrix = params['S_matrix']
         hfe.S_vector = params['S_vector']
         hfe.T_matrix = params['T_matrix']
@@ -79,13 +79,11 @@ class HFE:
         hfe.e = params['e']
         hfe.c = params['c']
 
-        # Вычисляем приватные параметры, необходимые для дешифрования
         hfe.S_inv_matrix = hfe._invert_matrix(hfe.S_matrix)
         hfe.T_inv_matrix = hfe._invert_matrix(hfe.T_matrix)
         hfe.S_inv_vector = hfe._matrix_vector_mult(hfe.S_inv_matrix, hfe.S_vector)
         hfe.T_inv_vector = hfe._matrix_vector_mult(hfe.T_inv_matrix, hfe.T_vector)
 
-        # Вычисляем обратную экспоненту
         order = (1 << hfe.n) - 1
 
         def egcd(a, b):
@@ -275,8 +273,8 @@ class SecureChatClient:
     def __init__(self, host, port):
         self.host = host
         self.port = port
-        self.hfe = HFE()  # Создаем HFE с ключами для дешифрования
-        self.peer_public_keys = {}  # {(ip, port): public_params}
+        self.hfe = HFE()
+        self.peer_public_keys = {}
         self.setup_gui()
         self.setup_network()
         self.start_listening()
@@ -320,18 +318,15 @@ class SecureChatClient:
 
     def handle_client(self, client, addr):
         try:
-            # Получаем публичный ключ отправителя
             data = client.recv(4096 * 10)
             if not data:
                 return
             peer_public = self.deserialize_public_key(data)
             self.peer_public_keys[addr] = peer_public
 
-            # Отправляем свой публичный ключ
             my_public = self.serialize_public_key(self.hfe.get_public_parameters())
             client.sendall(my_public)
 
-            # Получаем зашифрованное сообщение
             encrypted = client.recv(4096)
             if encrypted:
                 decrypted = self.hfe.decrypt(encrypted)
@@ -354,26 +349,22 @@ class SecureChatClient:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.connect(recipient_address)
 
-                # Обмен ключами
                 public_params = self.hfe.get_public_parameters()
                 serialized_public = self.serialize_public_key(public_params)
                 s.sendall(serialized_public)
 
-                # Получаем публичный ключ получателя
                 received_data = s.recv(4096 * 10)
                 if not received_data:
                     raise ValueError("Не получен публичный ключ от получателя.")
                 peer_public = self.deserialize_public_key(received_data)
                 self.peer_public_keys[recipient_address] = peer_public
 
-                # Шифруем сообщение публичным ключом получателя
                 hfe_peer = self.hfe.from_public_parameters(peer_public)
                 encrypted = hfe_peer.encrypt(message.encode())
 
-                # Отправляем зашифрованное сообщение
                 s.sendall(encrypted)
 
-                self.display_message(f"[You → {recipient_ip}:{recipient_port}] {message}")
+                self.display_message(f"[Вы → {recipient_ip}:{recipient_port}] {message}")
                 self.message_entry.delete(0, tk.END)
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
